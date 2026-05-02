@@ -9,6 +9,7 @@ class MessageRead(BaseModel):
     messageText: str
     createdAt: datetime
     messageIndex: int
+    fileNames: List[str] = []
 
     class Config:
         orm_mode = True

@@ -1,0 +1,5 @@
+PyPDF2
+PyMuPDF
+pdfplumber
+pdf2image
+pytesseract

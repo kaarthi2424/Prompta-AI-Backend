@@ -135,34 +135,52 @@ def process_pdf(file_path: str) -> List[Document]:
             text = page.get_text("text")
             if text and text.strip():
                 docs.append(Document(page_content=text, metadata={"source": file_path, "page": i}))
-        print(f"Docs loaded: {docs}")
         if docs:
             logger.info("Loaded PDF using PyMuPDF")
             return docs
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"PyMuPDF loader failed: {e}")
 
     # 2. UnstructuredPDFLoader
     try:
         loader = UnstructuredPDFLoader(file_path)
         docs = loader.load()
-        if docs and any(d.page_content.strip() for d in docs):
+        if docs and any(getattr(d, 'page_content', '').strip() for d in docs):
             logger.info("Loaded PDF using UnstructuredPDFLoader")
             return docs
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"UnstructuredPDFLoader failed: {e}")
 
     # 3. PDFPlumberLoader
     try:
         loader = PDFPlumberLoader(file_path)
         docs = loader.load()
-        if docs and any(d.page_content.strip() for d in docs):
+        if docs and any(getattr(d, 'page_content', '').strip() for d in docs):
             logger.info("Loaded PDF using PDFPlumberLoader")
             return docs
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"PDFPlumberLoader failed: {e}")
         
-    # 4. OCR Fallback (Simplified for API context)
+    # 4. PyPDF2 fallback (covers many text-based PDFs)
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(file_path)
+        pypdf_docs = []
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text() or ""
+            except Exception as e:
+                logger.debug(f"PyPDF2 page extract failed for page {i}: {e}")
+                text = ""
+            if text and text.strip():
+                pypdf_docs.append(Document(page_content=text, metadata={"source": file_path, "page": i}))
+        if pypdf_docs:
+            logger.info("Loaded PDF using PyPDF2")
+            return pypdf_docs
+    except Exception as e:
+        logger.warning(f"PyPDF2 fallback failed: {e}")
+        
+    # 5. OCR Fallback (Simplified for API context)
     try:
         from pdf2image import convert_from_path
         import pytesseract
@@ -232,6 +250,28 @@ def get_all_conversations(session: Session = Depends(get_session)):
     # when using ORMs unless you use complex loading strategies.
     for convo in results:
         convo.messages.sort(key=lambda m: m.messageIndex)
+        # Attach file names to each message where available
+        for m in convo.messages:
+            try:
+                rows = session.exec(
+                    select(FileChunk.fileName).where(
+                        FileChunk.conversationId == convo.conversationId,
+                        FileChunk.messageIndex == m.messageIndex
+                    )
+                ).all()
+                filenames = []
+                for r in rows:
+                    if isinstance(r, (list, tuple)):
+                        val = r[0] if r else None
+                    else:
+                        val = r
+                    if val is not None:
+                        filenames.append(val)
+                # Deduplicate while preserving order; set via object.__setattr__ to avoid Pydantic validation
+                file_list = list(dict.fromkeys(filenames)) if filenames else []
+                object.__setattr__(m, 'fileNames', file_list)
+            except Exception:
+                m.fileNames = []
         
     return results
 
@@ -245,6 +285,28 @@ def get_conversation(conversation_id: uuid.UUID, session: Session = Depends(get_
     
     # Sort messages by index (C# did this)
     conversation.messages.sort(key=lambda m: m.messageIndex)
+    # Attach file names per message if present in FileChunks
+    for m in conversation.messages:
+        try:
+            rows = session.exec(
+                select(FileChunk.fileName).where(
+                    FileChunk.conversationId == conversation.conversationId,
+                    FileChunk.messageIndex == m.messageIndex
+                )
+            ).all()
+            filenames = []
+            for r in rows:
+                if isinstance(r, (list, tuple)):
+                    val = r[0] if r else None
+                else:
+                    val = r
+                if val is not None:
+                    filenames.append(val)
+            file_list = list(dict.fromkeys(filenames)) if filenames else []
+            object.__setattr__(m, 'fileNames', file_list)
+        except Exception:
+            m.fileNames = []
+
     return conversation
 
 @app.delete("/chat/deleteById/{conversation_id}")
